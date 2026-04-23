@@ -31,8 +31,8 @@ def _run_lint(args: argparse.Namespace) -> int:
 
     try:
         report = lint(raw, config_path=config_path)
-    except json.JSONDecodeError as e:
-        print(f"Error: invalid JSON — {e}", file=sys.stderr)
+    except (json.JSONDecodeError, ValueError, ImportError) as e:
+        print(f"Error: cannot parse config — {e}", file=sys.stderr)
         return 2
 
     severity_order = {Severity.ERROR: 0, Severity.WARN: 1, Severity.INFO: 2}
@@ -147,8 +147,8 @@ def _run_diff(args: argparse.Namespace) -> int:
 
     try:
         report = diff_configs(base_raw, target_raw, base_label, target_label)
-    except json.JSONDecodeError as e:
-        print(f"Error: invalid JSON — {e}", file=sys.stderr)
+    except (json.JSONDecodeError, ValueError, ImportError) as e:
+        print(f"Error: cannot parse config — {e}", file=sys.stderr)
         return 2
 
     if args.json_output:
@@ -176,9 +176,9 @@ def _run_fix(args: argparse.Namespace) -> int:
         raw = sys.stdin.read()
 
     try:
-        fixed_json, descriptions = fix_config(raw)
-    except json.JSONDecodeError as e:
-        print(f"Error: invalid JSON — {e}", file=sys.stderr)
+        fixed_output, descriptions = fix_config(raw, filename=args.config_file or "")
+    except (json.JSONDecodeError, ValueError, ImportError) as e:
+        print(f"Error: cannot parse config — {e}", file=sys.stderr)
         return 2
 
     if not descriptions:
@@ -195,22 +195,163 @@ def _run_fix(args: argparse.Namespace) -> int:
     # Output or write
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
-            f.write(fixed_json + "\n")
+            f.write(fixed_output + "\n")
         print(f"✓ Fixed config written to {args.output}", file=sys.stderr)
     elif args.in_place and args.config_file:
         with open(args.config_file, "w", encoding="utf-8") as f:
-            f.write(fixed_json + "\n")
+            f.write(fixed_output + "\n")
         print(f"✓ Fixed config written back to {args.config_file}", file=sys.stderr)
     else:
-        print(fixed_json)
+        print(fixed_output)
 
     return 0
+
+
+def _run_analyze(args: argparse.Namespace) -> int:
+    """Execute the analyze subcommand — agentic observe→act→verify→reason loop."""
+    from sparkguard.agent import analyze, analyze_offline, AgentConfig
+
+    if args.config_file:
+        try:
+            with open(args.config_file, "r", encoding="utf-8") as f:
+                raw = f.read()
+        except FileNotFoundError:
+            print(f"Error: file not found: {args.config_file}", file=sys.stderr)
+            return 2
+        except OSError as e:
+            print(f"Error reading file: {e}", file=sys.stderr)
+            return 2
+    else:
+        if sys.stdin.isatty():
+            print("Reading from stdin (Ctrl+D / Ctrl+Z to end)...", file=sys.stderr)
+        raw = sys.stdin.read()
+
+    auto_fix = not args.no_fix
+
+    try:
+        if args.offline:
+            result = analyze_offline(raw, auto_fix=auto_fix)
+        else:
+            config = AgentConfig.from_env()
+            if args.model:
+                config.model = args.model
+            try:
+                result = analyze(raw, agent_config=config, auto_fix=auto_fix)
+            except RuntimeError as e:
+                if "No API key" in str(e):
+                    print(
+                        "No API key found. Falling back to offline analysis.\n"
+                        "Set SPARKGUARD_API_KEY or OPENAI_API_KEY for full agent mode.\n",
+                        file=sys.stderr,
+                    )
+                    result = analyze_offline(raw, auto_fix=auto_fix)
+                else:
+                    print(f"Error: {e}", file=sys.stderr)
+                    return 1
+
+        if args.json_output:
+            print(json.dumps(result.as_dict(), indent=2))
+        else:
+            print(result.format_text())
+
+        # Write fixed config if requested and fixes were applied
+        if result.fixed_config:
+            if args.output:
+                with open(args.output, "w", encoding="utf-8") as f:
+                    f.write(result.fixed_config + "\n")
+                print(f"✓ Fixed config written to {args.output}", file=sys.stderr)
+            elif args.in_place and args.config_file:
+                with open(args.config_file, "w", encoding="utf-8") as f:
+                    f.write(result.fixed_config + "\n")
+                print(f"✓ Fixed config written back to {args.config_file}", file=sys.stderr)
+
+    except (json.JSONDecodeError, ValueError, ImportError) as e:
+        print(f"Error: cannot parse config — {e}", file=sys.stderr)
+        return 2
+
+    return 0
+
+
+def _run_serve(_args: argparse.Namespace) -> int:
+    """Start the MCP server."""
+    import asyncio
+    from sparkguard.mcp_server import run_mcp_server, HAS_MCP
+
+    if not HAS_MCP:
+        print(
+            "Error: MCP SDK not installed. Install with:\n"
+            "  pip install 'sparkguard[mcp]'\n",
+            file=sys.stderr,
+        )
+        return 1
+
+    print("Starting SparkGuard MCP server (stdio)...", file=sys.stderr)
+    asyncio.run(run_mcp_server())
+    return 0
+
+
+def _run_verify(args: argparse.Namespace) -> int:
+    """Verify a config against real Spark infrastructure."""
+    from sparkguard.verify import dry_run, compare_jobs, find_spark_submit
+
+    if args.compare:
+        # Compare two job runs via History Server
+        app_ids = args.compare
+        if len(app_ids) != 2:
+            print("Error: --compare requires exactly 2 app IDs (before after)", file=sys.stderr)
+            return 2
+        try:
+            comparison = compare_jobs(
+                app_ids[0], app_ids[1],
+                history_server_url=args.history_server,
+            )
+            if args.json_output:
+                print(json.dumps(comparison.as_dict(), indent=2))
+            else:
+                print(comparison.format_text())
+            return 0
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+
+    # Dry-run mode (default)
+    if not args.config_file:
+        print("Error: config file required for dry-run.", file=sys.stderr)
+        return 2
+
+    try:
+        with open(args.config_file, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        print(f"Error: file not found: {args.config_file}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"Error reading file: {e}", file=sys.stderr)
+        return 2
+
+    spark_path = find_spark_submit()
+    if not spark_path:
+        print(
+            "Error: spark-submit not found.\n"
+            "  Set SPARK_HOME or add spark-submit to PATH.\n"
+            "  This validates your config against a real Spark installation.\n",
+            file=sys.stderr,
+        )
+        return 1
+
+    result = dry_run(raw, spark_path)
+    if args.json_output:
+        print(json.dumps(result.as_dict(), indent=2))
+    else:
+        print(result.format_text())
+
+    return 0 if result.accepted else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="sparkguard",
-        description="Lint Spark submit JSON configs for misconfigurations and anti-patterns.",
+        description="Spark config and code analysis agent — catches misconfigurations and anti-patterns.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -296,6 +437,79 @@ def main(argv: list[str] | None = None) -> int:
         help="Fix the file in place (overwrites the input file).",
     )
 
+    # --- analyze subcommand ---
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Agent-powered analysis: observe → auto-fix → verify → reason.",
+    )
+    analyze_parser.add_argument(
+        "config_file",
+        nargs="?",
+        help="Config file to analyze. Reads stdin if omitted.",
+    )
+    analyze_parser.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="Output analysis as JSON.",
+    )
+    analyze_parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Skip LLM — use rule-based heuristic reasoning only.",
+    )
+    analyze_parser.add_argument(
+        "--model",
+        help="Override LLM model (default: gpt-4o-mini or SPARKGUARD_MODEL env).",
+    )
+    analyze_parser.add_argument(
+        "--no-fix",
+        action="store_true",
+        help="Don't auto-fix — only observe and reason (like a linter with brains).",
+    )
+    analyze_parser.add_argument(
+        "-o", "--output",
+        help="Write the fixed config to this file.",
+    )
+    analyze_parser.add_argument(
+        "-i", "--in-place",
+        action="store_true",
+        help="Write the fixed config back to the input file.",
+    )
+
+    # --- serve subcommand ---
+    subparsers.add_parser(
+        "serve",
+        help="Start the SparkGuard MCP server (stdio transport).",
+    )
+
+    # --- verify subcommand ---
+    verify_parser = subparsers.add_parser(
+        "verify",
+        help="Validate config against real Spark (dry-run) or compare job metrics.",
+    )
+    verify_parser.add_argument(
+        "config_file",
+        nargs="?",
+        help="Config file to validate via spark-submit dry-run.",
+    )
+    verify_parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("BEFORE_APP_ID", "AFTER_APP_ID"),
+        help="Compare two Spark job runs via History Server.",
+    )
+    verify_parser.add_argument(
+        "--history-server",
+        help="Spark History Server URL (default: SPARK_HISTORY_SERVER env or localhost:18080).",
+    )
+    verify_parser.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="Output as JSON.",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command in ("generate", "gen"):
@@ -306,6 +520,12 @@ def main(argv: list[str] | None = None) -> int:
         return _run_diff(args)
     elif args.command == "fix":
         return _run_fix(args)
+    elif args.command == "analyze":
+        return _run_analyze(args)
+    elif args.command == "serve":
+        return _run_serve(args)
+    elif args.command == "verify":
+        return _run_verify(args)
     else:
         # No subcommand — show help
         parser.print_help()

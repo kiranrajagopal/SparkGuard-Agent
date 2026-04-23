@@ -11,6 +11,9 @@ dependencies = []
 
 [project.optional-dependencies]
 layer2 = ["sqlglot>=23.0"]
+mcp = ["mcp>=1.0"]
+yaml = ["pyyaml>=6.0"]
+hocon = ["pyhocon>=0.3.60"]
 dev = ["pytest>=7.0", "pytest-cov"]
 
 [project.scripts]

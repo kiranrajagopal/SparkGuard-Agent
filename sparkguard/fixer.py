@@ -24,20 +24,23 @@ def fixer(rule_id: str):
     return decorator
 
 
-def fix_config(raw_json: str) -> tuple[str, list[str]]:
-    """Apply all safe auto-fixes to a raw JSON config.
+def fix_config(raw: str, filename: str = "") -> tuple[str, list[str]]:
+    """Apply all safe auto-fixes to a config in any supported format.
 
-    Returns (fixed_json, list_of_descriptions_of_what_was_fixed).
+    Returns (fixed_output, list_of_descriptions_of_what_was_fixed).
+    Output is always JSON (regardless of input format).
     """
     from sparkguard.linter import lint
+    from sparkguard.formats import parse_config
 
-    parsed, dup_findings = parse_spark_config(raw_json)
+    parsed, parse_findings = parse_config(raw, filename=filename)
     conf = get_spark_conf(parsed)
-    report = lint(raw_json)
+    report = lint(raw, config_path=filename)
 
     descriptions: list[str] = []
 
     # Handle duplicate keys: rebuild from parsed (already deduplicated via last-wins)
+    dup_findings = [f for f in parse_findings if f.rule == "duplicate-key"]
     if dup_findings:
         for f in dup_findings:
             descriptions.append(f"Removed duplicate key '{f.keys[0]}' (kept last value)")

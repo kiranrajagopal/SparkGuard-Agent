@@ -59,9 +59,14 @@ def diff_configs(
     base_path: str = "base",
     target_path: str = "target",
 ) -> DiffReport:
-    """Compare two Spark configs: show changes and find regressions."""
-    base_parsed, _ = parse_spark_config(base_raw)
-    target_parsed, _ = parse_spark_config(target_raw)
+    """Compare two Spark configs: show changes and find regressions.
+
+    Accepts any supported format (JSON, Properties, YAML, HOCON).
+    """
+    from sparkguard.formats import parse_config
+
+    base_parsed, _ = parse_config(base_raw, filename=base_path)
+    target_parsed, _ = parse_config(target_raw, filename=target_path)
 
     base_conf = get_spark_conf(base_parsed)
     target_conf = get_spark_conf(target_parsed)
