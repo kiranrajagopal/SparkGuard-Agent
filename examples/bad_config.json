@@ -1,0 +1,16 @@
+{
+    "name": "xandr-bidlog-aggregation",
+    "conf": {
+        "spark.sql.adaptive.enabled": "true",
+        "spark.executor.memory": "16g",
+        "spark.executor.memoryOverhead": "256m",
+        "spark.executor.instances": "200",
+        "spark.dynamicAllocation.enabled": "false",
+        "spark.sql.shuffle.partitions": "5000",
+        "spark.sql.adaptive.coalescePartitions.enabled": "true",
+        "spark.sql.adaptive.skewJoin.enabled": "true",
+        "spark.memory.storageFraction": "0.8",
+        "spark.speculation": "true",
+        "spark.sql.adaptive.enabled": "false"
+    }
+}

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sparkguard"
+version = "0.1.0"
+description = "Spark config and code analysis agent — catches misconfigurations and anti-patterns before runtime."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+layer2 = ["sqlglot>=23.0"]
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[project.scripts]
+sparkguard = "sparkguard.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

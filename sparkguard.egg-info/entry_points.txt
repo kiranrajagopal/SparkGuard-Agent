@@ -1,0 +1,2 @@
+[console_scripts]
+sparkguard = sparkguard.cli:main

@@ -1,0 +1,7 @@
+
+[dev]
+pytest>=7.0
+pytest-cov
+
+[layer2]
+sqlglot>=23.0
